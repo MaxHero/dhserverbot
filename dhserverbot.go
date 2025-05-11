@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 func main() {
@@ -21,6 +22,7 @@ func main() {
 	binaryPath := flag.String("binary_path", "", "Path to WindowsServer\\DreadHunger\\Binaries\\Win64\\DreadHungerServer-Win64-Shipping.exe")
 	sessionParams := flag.String("session_params", "maxplayers=8", "Default session parameters")
 	initSignature := flag.String("init_signature", "LogLoad: (Engine Initialization) Total Time:", "DH server log signature meaning initialization is done")
+	initTimeout := flag.Duration("init_timeout", 30*time.Second, "DH server initialization timeout")
 	maps := flag.String("maps", "", "Comma separated list of maps. Approach=Approach_Persistent,Departure=Departure_Persistent,Expanse=Expanse_Persistent")
 	discordToken := flag.String("discord_token", "", "Discord bot token")
 	discordCommand := flag.String("discord_command", "!start_dh", "Discord bot command to show the menu")
@@ -82,6 +84,7 @@ func main() {
 		return
 	}
 	config.InitSignature = *initSignature
+	config.InitTimeout = *initTimeout
 
 	if len(*maps) == 0 {
 		fmt.Println("Error: at least one map is required.")

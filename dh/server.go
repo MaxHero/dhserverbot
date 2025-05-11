@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 )
@@ -16,6 +17,7 @@ var NoAvailablePortError = errors.New("no available port")
 var NoSessionFoundError = errors.New("no session found")
 var UnknownMapError = errors.New("unknown map")
 var SessionCreationError = errors.New("session creation error")
+var TimeoutError = errors.New("timeout")
 
 type Map struct {
 	Name        string
@@ -46,18 +48,20 @@ type ServerConfig struct {
 	BinaryPath    string
 	SessionParams string
 	InitSignature string
+	InitTimeout   time.Duration
 	MaxSessions   uint
 }
 
 type server struct {
 	maps                  []string
 	mapNameToValue        map[string]string
-	sessions              []GameSession
+	runningSessions       []GameSession
 	maxConcurrentSessions uint
 	ports                 map[uint16]*exec.Cmd
 	serverBinary          string
 	defaultSessionParams  string
-	initDoneSignature     string
+	initSignature         string
+	initTimeout           time.Duration
 	mutex                 sync.Mutex
 }
 
@@ -66,13 +70,13 @@ func (s *server) Maps() []string {
 }
 
 func (s *server) RunningSessions() []GameSession {
-	return s.sessions
+	return s.runningSessions
 }
 
 func (s *server) NewSession(mapName string) (GameSession, error) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-	if s.maxConcurrentSessions != 0 && len(s.sessions) >= int(s.maxConcurrentSessions) {
+	if s.maxConcurrentSessions != 0 && len(s.runningSessions) >= int(s.maxConcurrentSessions) {
 		return GameSession{}, MaxSessionsCountError
 	}
 	_, exists := s.mapNameToValue[mapName]
@@ -107,9 +111,11 @@ func (s *server) NewSession(mapName string) (GameSession, error) {
 			}
 
 			log.Printf("Child process started")
+			initDone := make(chan struct{})
 			go func(port uint16) {
 				var wg sync.WaitGroup
 				wg.Add(2)
+				once := sync.Once{}
 				for _, pipe := range [...]io.ReadCloser{stdoutPipe, stderrPipe} {
 					go func(pipe io.ReadCloser) {
 						defer wg.Done()
@@ -124,9 +130,16 @@ func (s *server) NewSession(mapName string) (GameSession, error) {
 								break
 							}
 							log.Printf("DH server %v output: %v", port, line)
+							if strings.Contains(line, s.initSignature) {
+								once.Do(func() {
+									log.Printf("DH server %v init done\n", port)
+									close(initDone)
+								})
+							}
 						}
 					}(pipe)
 				}
+
 				if err := cmd.Wait(); err != nil {
 					log.Printf("DH server %v finished with error: %v\n", port, err)
 				}
@@ -134,18 +147,25 @@ func (s *server) NewSession(mapName string) (GameSession, error) {
 
 				s.mutex.Lock()
 				defer s.mutex.Unlock()
-				for i := range s.sessions {
-					if s.sessions[i].Port == port {
-						s.sessions = append(s.sessions[:i], s.sessions[i+1:]...)
+				for i := range s.runningSessions {
+					if s.runningSessions[i].Port == port {
+						s.runningSessions = append(s.runningSessions[:i], s.runningSessions[i+1:]...)
 						break
 					}
 				}
 				s.ports[port] = nil
 				log.Printf("DH server %v done\n", port)
 			}(port)
-			s.ports[port] = cmd
-			s.sessions = append(s.sessions, session)
-			return session, nil
+			select {
+			case <-time.After(s.initTimeout):
+				log.Printf("DH server %v init timeout\n", port)
+				cmd.Process.Kill()
+				return GameSession{}, TimeoutError
+			case <-initDone:
+				s.ports[port] = cmd
+				s.runningSessions = append(s.runningSessions, session)
+				return session, nil
+			}
 		}
 	}
 	return GameSession{}, NoAvailablePortError
@@ -154,7 +174,7 @@ func (s *server) NewSession(mapName string) (GameSession, error) {
 func (s *server) StopSession(port uint16) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-	for i, session := range s.sessions {
+	for i, session := range s.runningSessions {
 		if session.Port == port {
 			cmd := s.ports[port]
 			if cmd != nil {
@@ -164,7 +184,7 @@ func (s *server) StopSession(port uint16) error {
 				}
 			}
 			s.ports[port] = nil
-			s.sessions = append(s.sessions[:i], s.sessions[i+1:]...)
+			s.runningSessions = append(s.runningSessions[:i], s.runningSessions[i+1:]...)
 			return nil
 		}
 	}
@@ -175,12 +195,13 @@ func NewServer(config ServerConfig) Server {
 	result := &server{
 		maps:                  make([]string, 0, len(config.Maps)),
 		mapNameToValue:        make(map[string]string, len(config.Maps)),
-		sessions:              make([]GameSession, 0),
+		runningSessions:       make([]GameSession, 0),
 		maxConcurrentSessions: config.MaxSessions,
 		ports:                 make(map[uint16]*exec.Cmd),
 		serverBinary:          config.BinaryPath,
 		defaultSessionParams:  config.SessionParams,
-		initDoneSignature:     config.InitSignature,
+		initSignature:         config.InitSignature,
+		initTimeout:           config.InitTimeout,
 	}
 	for _, m := range config.Maps {
 		result.maps = append(result.maps, m.Name)

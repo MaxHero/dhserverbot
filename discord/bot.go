@@ -184,12 +184,23 @@ func (b *bot) interactionCreate(s *discordgo.Session, i *discordgo.InteractionCr
 					}
 				} else {
 					log.Println(i.Member.User, "Starting server:", selectedOption)
-					gameSession, err := b.server.NewSession(selectedOption)
-					if err != nil {
-						response = fmt.Sprintf("Error starting server: %v", err)
-					} else {
-						response = fmt.Sprintf("Server started on %v:%v for %v map", b.ip, gameSession.Port, gameSession.MapName)
-					}
+					response = "Starting server..."
+					go func() {
+						gameSession, err := b.server.NewSession(selectedOption)
+						if err != nil {
+							response = fmt.Sprintf("Error starting server: %v", err)
+						} else {
+							response = fmt.Sprintf("Server started on %v:%v for %v map", b.ip, gameSession.Port, gameSession.MapName)
+						}
+						response = i.Member.User.Mention() + " " + response
+						_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+							Content: &response,
+						})
+						if err != nil {
+							log.Printf("Error editing interaction response: %v", err)
+							return
+						}
+					}()
 				}
 				b.mu.Lock()
 				delete(b.userSelections, userID)
