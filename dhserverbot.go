@@ -20,10 +20,12 @@ func main() {
 	port := flag.String("port", "7777", "Ports (comma separated, single or range (e.g., 7777,8000-9000,11111)")
 	maxSessions := flag.Uint("max_sessions", 0, "Maximum number of concurrent sessions. 0 means no limit")
 	binaryPath := flag.String("binary_path", "", "Path to WindowsServer\\DreadHunger\\Binaries\\Win64\\DreadHungerServer-Win64-Shipping.exe")
-	sessionParams := flag.String("session_params", "maxplayers=8", "Default session parameters")
-	initSignature := flag.String("init_signature", "LogLoad: (Engine Initialization) Total Time:", "DH server log signature meaning initialization is done")
-	initTimeout := flag.Duration("init_timeout", 30*time.Second, "DH server initialization timeout")
 	maps := flag.String("maps", "", "Comma separated list of maps. Approach=Approach_Persistent,Departure=Departure_Persistent,Expanse=Expanse_Persistent")
+	sessionParams := flag.String("session_params", "maxplayers=8", "Default session parameters")
+	initSignature := flag.String("init_signature", "LogInit: Display: Engine is initialized. Leaving FEngineLoop::Init()", "DH server log signature meaning initialization is done")
+	initTimeout := flag.Duration("init_timeout", 30*time.Second, "DH server initialization timeout")
+	fridaPath := flag.String("frida_path", "", "Path to frida injector script")
+	fridaInitSignature := flag.String("frida_init_signature", "Frida scripts have been injected.", "Frida injector log signature meaning initialization is done")
 	discordToken := flag.String("discord_token", "", "Discord bot token")
 	discordCommand := flag.String("discord_command", "!start_dh", "Discord bot command to show the menu")
 
@@ -85,6 +87,8 @@ func main() {
 	}
 	config.InitSignature = *initSignature
 	config.InitTimeout = *initTimeout
+	config.FridaPath = *fridaPath
+	config.FridaInitSignature = *fridaInitSignature
 
 	if len(*maps) == 0 {
 		fmt.Println("Error: at least one map is required.")

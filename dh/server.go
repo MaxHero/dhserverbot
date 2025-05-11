@@ -43,13 +43,15 @@ type PortRange struct {
 }
 
 type ServerConfig struct {
-	Maps          []Map
-	Ports         []PortRange
-	BinaryPath    string
-	SessionParams string
-	InitSignature string
-	InitTimeout   time.Duration
-	MaxSessions   uint
+	Maps               []Map
+	Ports              []PortRange
+	BinaryPath         string
+	SessionParams      string
+	InitSignature      string
+	InitTimeout        time.Duration
+	MaxSessions        uint
+	FridaPath          string
+	FridaInitSignature string
 }
 
 type server struct {
@@ -58,10 +60,12 @@ type server struct {
 	runningSessions       []GameSession
 	maxConcurrentSessions uint
 	ports                 map[uint16]*exec.Cmd
-	serverBinary          string
-	defaultSessionParams  string
+	binaryPath            string
+	sessionParams         string
 	initSignature         string
 	initTimeout           time.Duration
+	fridaPath             string
+	fridaInitSignature    string
 	mutex                 sync.Mutex
 }
 
@@ -90,21 +94,19 @@ func (s *server) NewSession(mapName string) (GameSession, error) {
 				Time:    time.Now(),
 				Port:    port,
 			}
-			args := fmt.Sprintf("%v?%v?port=%v -log", s.mapNameToValue[mapName], s.defaultSessionParams, port)
+			args := fmt.Sprintf("%v?%v?port=%v -log", s.mapNameToValue[mapName], s.sessionParams, port)
 			log.Printf("Starting DH server %v with args: %v\n", port, args)
-			cmd := exec.Command(s.serverBinary, args)
+			cmd := exec.Command(s.binaryPath, args)
 			stdoutPipe, err := cmd.StdoutPipe()
 			if err != nil {
 				log.Printf("Error creating stdout pipe: %v\n", err)
 				return GameSession{}, SessionCreationError
 			}
-
 			stderrPipe, err := cmd.StderrPipe()
 			if err != nil {
 				log.Printf("Error creating stderr pipe: %v\n", err)
 				return GameSession{}, SessionCreationError
 			}
-
 			if err := cmd.Start(); err != nil {
 				log.Printf("Error starting command: %v\n", err)
 				return GameSession{}, SessionCreationError
@@ -133,7 +135,49 @@ func (s *server) NewSession(mapName string) (GameSession, error) {
 							if strings.Contains(line, s.initSignature) {
 								once.Do(func() {
 									log.Printf("DH server %v init done\n", port)
-									close(initDone)
+									if s.fridaPath == "" {
+										close(initDone)
+										return
+									}
+
+									fridaArgs := fmt.Sprintf("%v", cmd.Process.Pid)
+									log.Printf("Starting Frida with args: %v\n", fridaArgs)
+									fridaCmd := exec.Command(s.fridaPath, fridaArgs)
+									fridaStdoutPipe, err := fridaCmd.StdoutPipe()
+									if err != nil {
+										log.Printf("Error creating stdout pipe: %v\n", err)
+									}
+									fridaStderrPipe, err := fridaCmd.StderrPipe()
+									if err != nil {
+										log.Printf("Error creating stderr pipe: %v\n", err)
+									}
+									if err := fridaCmd.Start(); err != nil {
+										log.Printf("Error starting command: %v\n", err)
+									}
+
+									fridaOnce := sync.Once{}
+									for _, pipe := range [...]io.ReadCloser{fridaStdoutPipe, fridaStderrPipe} {
+										go func(pipe io.ReadCloser) {
+											reader := bufio.NewReader(pipe)
+											for {
+												line, err := reader.ReadString('\n')
+												if err != nil {
+													if err == io.EOF {
+														break
+													}
+													log.Printf("Error reading stdout: %v\n", err)
+													break
+												}
+												log.Printf("Frida %v output: %v", port, line)
+												if strings.Contains(line, s.fridaInitSignature) {
+													fridaOnce.Do(func() {
+														log.Printf("Frida init done\n")
+														close(initDone)
+													})
+												}
+											}
+										}(pipe)
+									}
 								})
 							}
 						}
@@ -198,10 +242,12 @@ func NewServer(config ServerConfig) Server {
 		runningSessions:       make([]GameSession, 0),
 		maxConcurrentSessions: config.MaxSessions,
 		ports:                 make(map[uint16]*exec.Cmd),
-		serverBinary:          config.BinaryPath,
-		defaultSessionParams:  config.SessionParams,
+		binaryPath:            config.BinaryPath,
+		sessionParams:         config.SessionParams,
 		initSignature:         config.InitSignature,
 		initTimeout:           config.InitTimeout,
+		fridaPath:             config.FridaPath,
+		fridaInitSignature:    config.FridaInitSignature,
 	}
 	for _, m := range config.Maps {
 		result.maps = append(result.maps, m.Name)
