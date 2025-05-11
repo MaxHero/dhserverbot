@@ -14,13 +14,14 @@ import (
 )
 
 type bot struct {
+	command        string
 	ip             net.IP
 	server         dh.Server
 	userSelections map[string]string
 	mu             sync.RWMutex
 }
 
-func ProcessBot(ctx context.Context, token string, ip net.IP, server dh.Server) {
+func ProcessBot(ctx context.Context, token string, command string, ip net.IP, server dh.Server) {
 	dg, err := discordgo.New("Bot " + token)
 	if err != nil {
 		log.Println("Error creating Discord session:", err)
@@ -28,17 +29,16 @@ func ProcessBot(ctx context.Context, token string, ip net.IP, server dh.Server) 
 	}
 
 	b := &bot{
+		command:        command,
 		ip:             ip,
 		server:         server,
 		userSelections: make(map[string]string),
 	}
 
-	// Register handlers for events
 	dg.AddHandler(b.ready)
 	dg.AddHandler(b.messageCreate)
 	dg.AddHandler(b.interactionCreate)
 
-	// Open a websocket connection to Discord
 	err = dg.Open()
 	if err != nil {
 		log.Println("Error opening connection:", err)
@@ -51,8 +51,7 @@ func ProcessBot(ctx context.Context, token string, ip net.IP, server dh.Server) 
 }
 
 func (b *bot) ready(s *discordgo.Session, event *discordgo.Ready) {
-	// Set the bot's status
-	err := s.UpdateGameStatus(0, "Use start_dh to show options")
+	err := s.UpdateGameStatus(0, fmt.Sprintf("Use %v to show options", b.command))
 	if err != nil {
 		log.Println("Error setting status:", err)
 	}
@@ -60,12 +59,10 @@ func (b *bot) ready(s *discordgo.Session, event *discordgo.Ready) {
 }
 
 func (b *bot) messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
-	// Ignore messages from the bot itself
 	if m.Author.ID == s.State.User.ID {
 		return
 	}
-	// Command to show the menu
-	if m.Content == "start_dh" {
+	if m.Content == b.command {
 		b.showDropdownWithSubmitButton(s, m.ChannelID)
 	}
 }
@@ -74,14 +71,14 @@ func (b *bot) getDropDownOptions() []discordgo.SelectMenuOption {
 	result := make([]discordgo.SelectMenuOption, 0, len(b.server.Maps()))
 	for _, mapName := range b.server.Maps() {
 		result = append(result, discordgo.SelectMenuOption{
-			Label: "Start new " + mapName,
+			Label: fmt.Sprintf("Start new %v", mapName),
 			Value: mapName,
 		})
 	}
-	for _, session := range b.server.Sessions() {
+	for _, session := range b.server.RunningSessions() {
 		result = append(result, discordgo.SelectMenuOption{
-			Label: "Stop " + session.MapName + " on port " + fmt.Sprint(session.Port) + " (started at " + session.Time.Format(time.TimeOnly) + ")",
-			Value: "stop_" + fmt.Sprint(session.Port),
+			Label: fmt.Sprintf("Stop %v on port %v (started at %v)", session.MapName, session.Port, session.Time.Format(time.TimeOnly)),
+			Value: fmt.Sprintf("stop_%v", session.Port),
 		})
 	}
 	return result
@@ -89,9 +86,8 @@ func (b *bot) getDropDownOptions() []discordgo.SelectMenuOption {
 
 func (b *bot) showDropdownWithSubmitButton(s *discordgo.Session, channelID string) {
 	_, err := s.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
-		Content: "Please select an option from the dropdown and then click Submit:",
+		Content: "Select an option and then click the button",
 		Components: []discordgo.MessageComponent{
-			// Dropdown row
 			&discordgo.ActionsRow{
 				Components: []discordgo.MessageComponent{
 					&discordgo.SelectMenu{
@@ -101,12 +97,11 @@ func (b *bot) showDropdownWithSubmitButton(s *discordgo.Session, channelID strin
 					},
 				},
 			},
-			// Submit button row (disabled by default)
 			&discordgo.ActionsRow{
 				Components: []discordgo.MessageComponent{
 					&discordgo.Button{
 						CustomID: "submit_selection",
-						Label:    "Submit",
+						Label:    "Go!",
 						Style:    discordgo.PrimaryButton,
 						Disabled: true,
 					},
@@ -124,44 +119,35 @@ func (b *bot) interactionCreate(s *discordgo.Session, i *discordgo.InteractionCr
 	switch i.Type {
 	case discordgo.InteractionMessageComponent:
 		data := i.MessageComponentData()
-
-		options := b.getDropDownOptions()
 		if data.CustomID == "option_select" {
-			// Handle dropdown selection
 			userID := i.Member.User.ID
 			selectedOption := data.Values[0]
-			log.Println(i.Member.User.Username, "Selected option:", selectedOption)
 
-			// Store the user's selection
 			b.mu.Lock()
 			b.userSelections[userID] = selectedOption
 			b.mu.Unlock()
 
+			options := b.getDropDownOptions()
 			for optionIdx := range options {
 				options[optionIdx].Default = selectedOption == options[optionIdx].Value
 			}
-			// Update the message to enable submit button
 			err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 				Type: discordgo.InteractionResponseUpdateMessage,
 				Data: &discordgo.InteractionResponseData{
-					Content: "Option selected! Now click the Submit button to confirm.",
 					Components: []discordgo.MessageComponent{
-						// Dropdown row (unchanged)
 						&discordgo.ActionsRow{
 							Components: []discordgo.MessageComponent{
 								&discordgo.SelectMenu{
-									CustomID:    "option_select",
-									Placeholder: "Choose an option",
-									Options:     options,
+									CustomID: "option_select",
+									Options:  options,
 								},
 							},
 						},
-						// Submit button row (now enabled)
 						&discordgo.ActionsRow{
 							Components: []discordgo.MessageComponent{
 								&discordgo.Button{
 									CustomID: "submit_selection",
-									Label:    "Submit",
+									Label:    "Go!",
 									Style:    discordgo.PrimaryButton,
 									Disabled: false,
 								},
@@ -175,50 +161,45 @@ func (b *bot) interactionCreate(s *discordgo.Session, i *discordgo.InteractionCr
 				log.Println("Error responding to dropdown selection:", err)
 			}
 		} else if data.CustomID == "submit_selection" {
-			// Handle submit button
 			userID := i.Member.User.ID
 
 			b.mu.RLock()
 			selectedOption, exists := b.userSelections[userID]
 			b.mu.RUnlock()
 
-			var response string
+			response := "Wrong option selected!"
 			if exists {
-				response = "Please select a valid option first!"
 				if strings.HasPrefix(selectedOption, "stop_") {
 					port, err := strconv.Atoi(selectedOption[5:])
 					if err != nil {
-						response = "Error parsing port:" + err.Error()
+						response = fmt.Sprintf("Error parsing port: %v", err)
 					} else {
-						log.Println(i.Member.User.Username, "Stoping server:", port)
+						log.Println(i.Member.User, "Stoping server:", port)
 						err = b.server.StopSession(uint16(port))
 						if err != nil {
-							response = "Error stopping server: " + err.Error()
+							response = fmt.Sprintf("Error stopping server: %v", err)
 						} else {
-							response = "Server stopped on port " + fmt.Sprint(port) + "."
+							response = fmt.Sprintf("Server stopped on port %v", port)
 						}
 					}
 				} else {
-					log.Println(i.Member.User.Username, "Starting server:", selectedOption)
+					log.Println(i.Member.User, "Starting server:", selectedOption)
 					gameSession, err := b.server.NewSession(selectedOption)
 					if err != nil {
-						response = "Error starting server: " + err.Error()
+						response = fmt.Sprintf("Error starting server: %v", err)
 					} else {
-						response = "Server started on " + fmt.Sprint(b.ip) + ":" + fmt.Sprint(gameSession.Port) + " for " + gameSession.MapName + " map."
+						response = fmt.Sprintf("Server started on %v:%v for %v map", b.ip, gameSession.Port, gameSession.MapName)
 					}
 				}
-				// Clear the selection after submission
 				b.mu.Lock()
 				delete(b.userSelections, userID)
 				b.mu.Unlock()
-			} else {
-				response = "You need to select an option first!"
 			}
 
 			err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-				Type: discordgo.InteractionResponseChannelMessageWithSource,
+				Type: discordgo.InteractionResponseUpdateMessage,
 				Data: &discordgo.InteractionResponseData{
-					Content: response,
+					Content: i.Member.User.Mention() + " " + response,
 				},
 			})
 			log.Println(response)

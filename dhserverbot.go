@@ -15,12 +15,15 @@ import (
 )
 
 func main() {
-	ip := flag.String("ip", "", "IP address of server. Needed for Discord integration.")
+	ip := flag.String("ip", "", "IP address of server. Needed for Discord integration")
 	port := flag.String("port", "7777", "Ports (comma separated, single or range (e.g., 7777,8000-9000,11111)")
-	maxSessions := flag.Uint("max_sessions", 0, "Maximum number of concurrent sessions. 0 means no limit.")
-	dhBinaryPath := flag.String("dh_binary", "", "Path to WindowsServer\\DreadHunger\\Binaries\\Win64\\DreadHungerServer-Win64-Shipping.exe")
+	maxSessions := flag.Uint("max_sessions", 0, "Maximum number of concurrent sessions. 0 means no limit")
+	binaryPath := flag.String("binary_path", "", "Path to WindowsServer\\DreadHunger\\Binaries\\Win64\\DreadHungerServer-Win64-Shipping.exe")
+	sessionParams := flag.String("session_params", "maxplayers=8", "Default session parameters")
+	initSignature := flag.String("init_signature", "LogLoad: (Engine Initialization) Total Time:", "DH server log signature meaning initialization is done")
 	maps := flag.String("maps", "", "Comma separated list of maps. Approach=Approach_Persistent,Departure=Departure_Persistent,Expanse=Expanse_Persistent")
 	discordToken := flag.String("discord_token", "", "Discord bot token")
+	discordCommand := flag.String("discord_command", "!start_dh", "Discord bot command to show the menu")
 
 	flag.Parse()
 
@@ -64,14 +67,21 @@ func main() {
 			config.Ports = append(config.Ports, dh.PortRange{Start: uint16(s), End: uint16(e)})
 		}
 	}
-	config.MaxConcurrentSessions = *maxSessions
+	config.MaxSessions = *maxSessions
 
-	if *dhBinaryPath == "" {
+	if *binaryPath == "" {
 		fmt.Println("Error: Dread Hunger binary path is required.")
 		flag.Usage()
 		return
 	}
-	config.ServerBinaryPath = *dhBinaryPath
+	config.BinaryPath = *binaryPath
+
+	if *initSignature == "" {
+		fmt.Println("Error: Dread Hunger init done signature is required.")
+		flag.Usage()
+		return
+	}
+	config.InitSignature = *initSignature
 
 	if len(*maps) == 0 {
 		fmt.Println("Error: at least one map is required.")
@@ -90,23 +100,25 @@ func main() {
 		flag.Usage()
 		return
 	}
-
 	if *discordToken == "" {
 		fmt.Println("Error: Discord bot token is required.")
 		flag.Usage()
 		return
 	}
-
+	if *discordCommand == "" {
+		fmt.Println("Error: Discord bot command is required.")
+		flag.Usage()
+		return
+	}
+	config.SessionParams = *sessionParams
 	server := dh.NewServer(config)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go discord.ProcessBot(ctx, *discordToken, parsedIP, server)
+	go discord.ProcessBot(ctx, *discordToken, *discordCommand, parsedIP, server)
 
 	fmt.Println("Application is now running. Press CTRL-C to exit.")
 	sc := make(chan os.Signal, 1)
 	signal.Notify(sc, syscall.SIGINT, syscall.SIGTERM, os.Interrupt)
 	<-sc
-
-	cancel()
 }
