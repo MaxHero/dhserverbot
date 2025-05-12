@@ -94,12 +94,9 @@ func (s *server) NewSession(mapName string) (GameSession, error) {
 				Time:    time.Now(),
 				Port:    port,
 			}
-			args := []string{
-				fmt.Sprintf("%v?%v?port=%v", s.mapNameToValue[mapName], s.sessionParams, port),
-				"-log",
-			}
+			args := fmt.Sprintf("%v?%v?port=%v -log", s.mapNameToValue[mapName], s.sessionParams, port)
 			log.Printf("Starting DH server %v with args: %v\n", port, args)
-			cmd := exec.Command(s.binaryPath, args...)
+			cmd := exec.Command(s.binaryPath, args)
 			stdoutPipe, err := cmd.StdoutPipe()
 			if err != nil {
 				log.Printf("Error creating stdout pipe: %v\n", err)
