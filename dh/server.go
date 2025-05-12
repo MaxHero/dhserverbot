@@ -83,7 +83,7 @@ func (s *server) NewSession(mapName string) (GameSession, error) {
 	if s.maxConcurrentSessions != 0 && len(s.runningSessions) >= int(s.maxConcurrentSessions) {
 		return GameSession{}, MaxSessionsCountError
 	}
-	_, exists := s.mapNameToValue[mapName]
+	mapValue, exists := s.mapNameToValue[mapName]
 	if !exists {
 		return GameSession{}, UnknownMapError
 	}
@@ -94,9 +94,12 @@ func (s *server) NewSession(mapName string) (GameSession, error) {
 				Time:    time.Now(),
 				Port:    port,
 			}
-			args := fmt.Sprintf("%v?%v?port=%v -log", s.mapNameToValue[mapName], s.sessionParams, port)
+			args := []string{
+				fmt.Sprintf("%v?%v?port=%v", s.mapNameToValue[mapName], s.sessionParams, port),
+				"-log",
+			}
 			log.Printf("Starting DH server %v with args: %v\n", port, args)
-			cmd := exec.Command(s.binaryPath, args)
+			cmd := exec.Command(s.binaryPath, args...)
 			stdoutPipe, err := cmd.StdoutPipe()
 			if err != nil {
 				log.Printf("Error creating stdout pipe: %v\n", err)
@@ -140,9 +143,12 @@ func (s *server) NewSession(mapName string) (GameSession, error) {
 										return
 									}
 
-									fridaArgs := fmt.Sprintf("%v", cmd.Process.Pid)
+									fridaArgs := []string{
+										fmt.Sprintf("%v", cmd.Process.Pid),
+										mapValue,
+									}
 									log.Printf("Starting Frida with args: %v\n", fridaArgs)
-									fridaCmd := exec.Command(s.fridaPath, fridaArgs)
+									fridaCmd := exec.Command(s.fridaPath, fridaArgs...)
 									fridaStdoutPipe, err := fridaCmd.StdoutPipe()
 									if err != nil {
 										log.Printf("Error creating stdout pipe: %v\n", err)
