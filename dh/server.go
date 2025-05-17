@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"os/exec"
 	"strings"
 	"sync"
@@ -59,7 +60,9 @@ type server struct {
 	mapNameToValue        map[string]string
 	runningSessions       []GameSession
 	maxConcurrentSessions uint
-	ports                 map[uint16]*exec.Cmd
+	portIdx               int
+	ports                 []uint16
+	portToCmd             map[uint16]*exec.Cmd
 	binaryPath            string
 	sessionParams         string
 	initSignature         string
@@ -87,8 +90,13 @@ func (s *server) NewSession(mapName string) (GameSession, error) {
 	if !exists {
 		return GameSession{}, UnknownMapError
 	}
-	for port, cmd := range s.ports {
-		if cmd == nil {
+	for startedPortIdx := s.portIdx; ; {
+		port := s.ports[s.portIdx]
+		s.portIdx++
+		if s.portIdx >= len(s.ports) {
+			s.portIdx = 0
+		}
+		if cmd := s.portToCmd[s.ports[s.portIdx]]; cmd == nil {
 			session := GameSession{
 				MapName: mapName,
 				Time:    time.Now(),
@@ -99,7 +107,7 @@ func (s *server) NewSession(mapName string) (GameSession, error) {
 				"-log",
 			}
 			log.Printf("Starting DH server %v with args: %v\n", port, args)
-			cmd := exec.Command(s.binaryPath, args...)
+			cmd = exec.Command(s.binaryPath, args...)
 			stdoutPipe, err := cmd.StdoutPipe()
 			if err != nil {
 				log.Printf("Error creating stdout pipe: %v\n", err)
@@ -212,7 +220,7 @@ func (s *server) NewSession(mapName string) (GameSession, error) {
 						break
 					}
 				}
-				s.ports[port] = nil
+				delete(s.portToCmd, port)
 				log.Printf("DH server %v done\n", port)
 			}(port)
 			select {
@@ -221,10 +229,13 @@ func (s *server) NewSession(mapName string) (GameSession, error) {
 				cmd.Process.Kill()
 				return GameSession{}, TimeoutError
 			case <-initDone:
-				s.ports[port] = cmd
+				s.portToCmd[port] = cmd
 				s.runningSessions = append(s.runningSessions, session)
 				return session, nil
 			}
+		}
+		if s.portIdx == startedPortIdx {
+			break
 		}
 	}
 	return GameSession{}, NoAvailablePortError
@@ -235,14 +246,13 @@ func (s *server) StopSession(port uint16) error {
 	defer s.mutex.Unlock()
 	for i, session := range s.runningSessions {
 		if session.Port == port {
-			cmd := s.ports[port]
-			if cmd != nil {
+			if cmd := s.portToCmd[port]; cmd != nil {
 				err := cmd.Process.Kill()
 				if err != nil {
 					log.Printf("Error cancelling command: %v\n", err)
 				}
 			}
-			s.ports[port] = nil
+			delete(s.portToCmd, port)
 			s.runningSessions = append(s.runningSessions[:i], s.runningSessions[i+1:]...)
 			return nil
 		}
@@ -256,7 +266,8 @@ func NewServer(config ServerConfig) Server {
 		mapNameToValue:        make(map[string]string, len(config.Maps)),
 		runningSessions:       make([]GameSession, 0),
 		maxConcurrentSessions: config.MaxSessions,
-		ports:                 make(map[uint16]*exec.Cmd),
+		ports:                 make([]uint16, 0),
+		portToCmd:             make(map[uint16]*exec.Cmd),
 		binaryPath:            config.BinaryPath,
 		sessionParams:         config.SessionParams,
 		initSignature:         config.InitSignature,
@@ -269,9 +280,10 @@ func NewServer(config ServerConfig) Server {
 		result.mapNameToValue[m.Name] = m.ServerValue
 	}
 	for _, portRange := range config.Ports {
-		for i := portRange.Start; i <= portRange.End; i++ {
-			result.ports[i] = nil
+		for port := portRange.Start; port <= portRange.End; port++ {
+			result.ports = append(result.ports, port)
 		}
 	}
+	result.portIdx = rand.Intn(len(result.ports))
 	return result
 }
