@@ -94,9 +94,12 @@ func (s *server) NewSession(mapName string) (GameSession, error) {
 				Time:    time.Now(),
 				Port:    port,
 			}
-			args := fmt.Sprintf("%v?%v?port=%v -log", s.mapNameToValue[mapName], s.sessionParams, port)
+			args := []string{
+				fmt.Sprintf("%v?%v?port=%v", s.mapNameToValue[mapName], s.sessionParams, port),
+				"-log",
+			}
 			log.Printf("Starting DH server %v with args: %v\n", port, args)
-			cmd := exec.Command(s.binaryPath, args)
+			cmd := exec.Command(s.binaryPath, args...)
 			stdoutPipe, err := cmd.StdoutPipe()
 			if err != nil {
 				log.Printf("Error creating stdout pipe: %v\n", err)
@@ -134,53 +137,62 @@ func (s *server) NewSession(mapName string) (GameSession, error) {
 							log.Printf("DH server %v output: %v", port, line)
 							if strings.Contains(line, s.initSignature) {
 								once.Do(func() {
-									log.Printf("DH server %v init done\n", port)
-									if s.fridaPath == "" {
-										close(initDone)
-										return
-									}
+									go func() {
+										log.Printf("DH server %v init done\n", port)
+										if s.fridaPath == "" {
+											close(initDone)
+											return
+										}
 
-									fridaArgs := []string{
-										fmt.Sprintf("%v", cmd.Process.Pid),
-										mapValue,
-									}
-									log.Printf("Starting Frida with args: %v\n", fridaArgs)
-									fridaCmd := exec.Command(s.fridaPath, fridaArgs...)
-									fridaStdoutPipe, err := fridaCmd.StdoutPipe()
-									if err != nil {
-										log.Printf("Error creating stdout pipe: %v\n", err)
-									}
-									fridaStderrPipe, err := fridaCmd.StderrPipe()
-									if err != nil {
-										log.Printf("Error creating stderr pipe: %v\n", err)
-									}
-									if err := fridaCmd.Start(); err != nil {
-										log.Printf("Error starting command: %v\n", err)
-									}
+										fridaArgs := []string{
+											fmt.Sprintf("%v", cmd.Process.Pid),
+											mapValue,
+										}
+										log.Printf("Starting Frida with args: %v\n", fridaArgs)
+										fridaCmd := exec.Command(s.fridaPath, fridaArgs...)
+										fridaStdoutPipe, err := fridaCmd.StdoutPipe()
+										if err != nil {
+											log.Printf("Error creating stdout pipe: %v\n", err)
+										}
+										fridaStderrPipe, err := fridaCmd.StderrPipe()
+										if err != nil {
+											log.Printf("Error creating stderr pipe: %v\n", err)
+										}
+										if err := fridaCmd.Start(); err != nil {
+											log.Printf("Error starting command: %v\n", err)
+										}
 
-									fridaOnce := sync.Once{}
-									for _, pipe := range [...]io.ReadCloser{fridaStdoutPipe, fridaStderrPipe} {
-										go func(pipe io.ReadCloser) {
-											reader := bufio.NewReader(pipe)
-											for {
-												line, err := reader.ReadString('\n')
-												if err != nil {
-													if err == io.EOF {
+										var fridaWg sync.WaitGroup
+										fridaWg.Add(2)
+										fridaOnce := sync.Once{}
+										for _, pipe := range [...]io.ReadCloser{fridaStdoutPipe, fridaStderrPipe} {
+											go func(pipe io.ReadCloser) {
+												defer fridaWg.Done()
+												reader := bufio.NewReader(pipe)
+												for {
+													line, err := reader.ReadString('\n')
+													if err != nil {
+														if err == io.EOF {
+															break
+														}
+														log.Printf("Error reading stdout: %v\n", err)
 														break
 													}
-													log.Printf("Error reading stdout: %v\n", err)
-													break
+													log.Printf("Frida %v output: %v", port, line)
+													if strings.Contains(line, s.fridaInitSignature) {
+														fridaOnce.Do(func() {
+															log.Printf("Frida init done\n")
+															close(initDone)
+														})
+													}
 												}
-												log.Printf("Frida %v output: %v", port, line)
-												if strings.Contains(line, s.fridaInitSignature) {
-													fridaOnce.Do(func() {
-														log.Printf("Frida init done\n")
-														close(initDone)
-													})
-												}
-											}
-										}(pipe)
-									}
+											}(pipe)
+										}
+										if err := fridaCmd.Wait(); err != nil {
+											log.Printf("Frida %v finished with error: %v\n", port, err)
+										}
+										fridaWg.Wait()
+									}()
 								})
 							}
 						}
