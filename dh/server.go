@@ -91,11 +91,11 @@ func (s *server) NewSession(mapName string) (GameSession, error) {
 		return GameSession{}, UnknownMapError
 	}
 	for startedPortIdx := s.portIdx; ; {
-		port := s.ports[s.portIdx]
 		s.portIdx++
 		if s.portIdx >= len(s.ports) {
 			s.portIdx = 0
 		}
+		port := s.ports[s.portIdx]
 		if cmd := s.portToCmd[s.ports[s.portIdx]]; cmd == nil {
 			session := GameSession{
 				MapName: mapName,
